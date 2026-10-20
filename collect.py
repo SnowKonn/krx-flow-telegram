@@ -1,8 +1,8 @@
 """KRX 투자자별 수급 리포트 3종 → CSV 저장 → 텔레그램 발송 (세미나 데모).
 
-  ① 기타법인 / 사모펀드 5일 누적 순매수 상위
-  ② 연기금 순매도 상위 (당일)
-  ③ 금융투자 연속 순매수 종목
+  ① 기타법인·사모펀드 동시 순매수 (5영업일 누적이 둘 다 +)
+  ② 연기금 순매도 상위 (20영업일 누적)
+  ③ 금융투자 3주 연속 순매수 (5영업일 단위 주 3개 모두 +)
 
 필요한 환경변수 (로컬은 .env, GitHub 은 Secrets):
   KRX_ID, KRX_PW        KRX 정보데이터시스템(data.krx.co.kr) 계정 — pykrx 가 import 시 자동 로그인
@@ -35,9 +35,10 @@ from pykrx import stock  # KRX_ID/KRX_PW 가 있으면 여기서 로그인
 EOK = 1e8              # 원 → 억원
 TOP_N = 10
 CUM_DAYS = 5           # ① 누적 기간(영업일)
-STREAK_LOOKBACK = 20   # ③ 연속일 계산 구간(영업일)
-STREAK_MIN_DAYS = 3    # ③ 최소 연속일
-STREAK_MIN_EOK = 10    # ③ 연속 구간 누적 순매수 하한(억원) — 소액 노이즈 제거
+JOINT_MIN_EOK = 1      # ① 주체별 최소 순매수(억원) — 사실상 0 인 종목 제외
+PENSION_DAYS = 20      # ② 누적 기간(영업일)
+WEEK_DAYS = 5          # ③ 1주 = 5영업일
+N_WEEKS = 3            # ③ 연속 주 수
 DATA_DIR = Path(__file__).parent / "data"
 
 
@@ -55,27 +56,33 @@ def net_buy(start: str, end: str, investor: str) -> pd.DataFrame:
     return pd.DataFrame({"종목명": df["종목명"], "순매수(억)": df["순매수거래대금"] / EOK})
 
 
-def report_cumulative(days: list[str]) -> dict[str, pd.DataFrame]:
-    """① 기타법인·사모 5일 누적 순매수 상위."""
+def report_joint_buy(days: list[str]) -> pd.DataFrame:
+    """① 기타법인·사모 5일 누적이 둘 다 순매수인 종목, 합산 순."""
     start, end = days[-CUM_DAYS], days[-1]
-    return {inv: net_buy(start, end, inv).nlargest(TOP_N, "순매수(억)") for inv in ["기타법인", "사모"]}
+    corp, pef = net_buy(start, end, "기타법인"), net_buy(start, end, "사모")
+    df = corp.join(pef["순매수(억)"], how="inner", lsuffix="_기타법인", rsuffix="_사모")
+    df.columns = ["종목명", "기타법인(억)", "사모(억)"]
+    df = df[(df["기타법인(억)"] >= JOINT_MIN_EOK) & (df["사모(억)"] >= JOINT_MIN_EOK)]
+    df["합계(억)"] = df["기타법인(억)"] + df["사모(억)"]
+    return df.nlargest(TOP_N, "합계(억)")
 
 
 def report_pension_sell(days: list[str]) -> pd.DataFrame:
-    """② 연기금 당일 순매도 상위."""
-    return net_buy(days[-1], days[-1], "연기금").nsmallest(TOP_N, "순매수(억)")
+    """② 연기금 20일 누적 순매도 상위."""
+    return net_buy(days[-PENSION_DAYS], days[-1], "연기금").nsmallest(TOP_N, "순매수(억)")
 
 
-def report_fi_streak(days: list[str]) -> pd.DataFrame:
-    """③ 금융투자 연속 순매수: 기준일부터 거꾸로 순매수(>0)가 끊기지 않은 일수."""
-    daily = {d: net_buy(d, d, "금융투자") for d in days}
-    amt = pd.DataFrame({d: df["순매수(억)"] for d, df in daily.items()}).fillna(0)
-    names = pd.concat([df["종목명"] for df in daily.values()]).groupby(level=0).last()
-    streak = (amt > 0).iloc[:, ::-1].cumprod(axis=1).sum(axis=1).astype(int)
-    total = pd.Series({t: amt.loc[t].iloc[len(days) - s:].sum() for t, s in streak.items()})
-    out = pd.DataFrame({"종목명": names, "연속일": streak, "누적순매수(억)": total})
-    out = out[(out["연속일"] >= STREAK_MIN_DAYS) & (out["누적순매수(억)"] >= STREAK_MIN_EOK)]
-    return out.sort_values("누적순매수(억)", ascending=False).head(TOP_N)
+def report_fi_weekly(days: list[str]) -> pd.DataFrame:
+    """③ 금융투자: 기준일부터 거꾸로 자른 5영업일 블록 3개에서 모두 순매수, 3주 합산 순."""
+    weeks = {}
+    for w in range(N_WEEKS, 0, -1):  # 오래된 주 → 최근 주
+        blk = days[len(days) - w * WEEK_DAYS: len(days) - (w - 1) * WEEK_DAYS]
+        weeks[f"{N_WEEKS - w + 1}주(억)"] = net_buy(blk[0], blk[-1], "금융투자")
+    names = pd.concat([df["종목명"] for df in weeks.values()]).groupby(level=0).last()
+    amt = pd.DataFrame({k: df["순매수(억)"] for k, df in weeks.items()}).dropna()
+    amt = amt[(amt > 0).all(axis=1)]
+    out = amt.assign(**{"합계(억)": amt.sum(axis=1)}).join(names)
+    return out[["종목명", *weeks, "합계(억)"]].nlargest(TOP_N, "합계(억)")
 
 
 # ---------------------------------------------------------------- 저장
@@ -102,24 +109,25 @@ def fmt_date(d: str) -> str:
     return f"{d[:4]}-{d[4:6]}-{d[6:]}"
 
 
-def rank_lines(df: pd.DataFrame, col: str, extra: str | None = None) -> list[str]:
+def rank_lines(df: pd.DataFrame, col: str, detail=None) -> list[str]:
     lines = []
     for i, (_, r) in enumerate(df.iterrows(), 1):
-        pre = f"[{r[extra]}일{'+' if r[extra] >= STREAK_LOOKBACK else ''}] " if extra else ""
-        lines.append(f"{i}. {pre}{html.escape(r['종목명'])}  {r[col]:+,.0f}억")
+        tail = f"  ({detail(r)})" if detail else ""
+        lines.append(f"{i}. {html.escape(r['종목명'])}  {r[col]:+,.0f}억{tail}")
     return lines or ["(해당 종목 없음)"]
 
 
-def build_messages(days: list[str], cum, pension, streak) -> list[str]:
+def build_messages(days: list[str], joint, pension, fi) -> list[str]:
     d = fmt_date(days[-1])
-    m1 = [f"<b>① 기타법인·사모 {CUM_DAYS}일 누적 순매수 상위</b>",
-          f"{fmt_date(days[-CUM_DAYS])} ~ {d}"]
-    for inv, df in cum.items():
-        m1 += [f"\n<b>{inv}</b>"] + rank_lines(df, "순매수(억)")
-    m2 = [f"<b>② 연기금 순매도 상위</b>  {d}", ""] + rank_lines(pension, "순매수(억)")
-    m3 = [f"<b>③ 금융투자 연속 순매수</b>  {d}",
-          f"({STREAK_MIN_DAYS}일 이상 연속, 연속구간 누적순매수 순 · [연속일])", ""]
-    m3 += rank_lines(streak, "누적순매수(억)", extra="연속일")
+    m1 = [f"<b>① 기타법인·사모 동시 순매수</b>  {fmt_date(days[-CUM_DAYS])} ~ {d}",
+          f"({CUM_DAYS}일 누적 둘 다 {JOINT_MIN_EOK}억 이상 순매수, 합계 순 · 기타법인/사모)", ""]
+    m1 += rank_lines(joint, "합계(억)", lambda r: f"{r['기타법인(억)']:+,.0f} / {r['사모(억)']:+,.0f}")
+    m2 = [f"<b>② 연기금 순매도 상위 ({PENSION_DAYS}일 누적)</b>",
+          f"{fmt_date(days[-PENSION_DAYS])} ~ {d}", ""] + rank_lines(pension, "순매수(억)")
+    wk = [c for c in fi.columns if c.endswith("주(억)")]
+    m3 = [f"<b>③ 금융투자 {N_WEEKS}주 연속 순매수</b>  {fmt_date(days[-N_WEEKS * WEEK_DAYS])} ~ {d}",
+          f"({WEEK_DAYS}영업일 단위 주 {N_WEEKS}개 모두 순매수, 합계 순 · 주별)", ""]
+    m3 += rank_lines(fi, "합계(억)", lambda r: " → ".join(f"{r[c]:+,.0f}" for c in wk))
     return ["\n".join(m) for m in (m1, m2, m3)]
 
 
@@ -152,20 +160,19 @@ def send_telegram(texts: list[str]) -> None:
 def main() -> None:
     end = sys.argv[1] if len(sys.argv) > 1 else stock.get_nearest_business_day_in_a_week(
         dt.datetime.now(dt.timezone(dt.timedelta(hours=9))).strftime("%Y%m%d"))
-    days = business_days(end, STREAK_LOOKBACK)
+    days = business_days(end, max(PENSION_DAYS, N_WEEKS * WEEK_DAYS))
     if not days or days[-1] != end:
         sys.exit(f"[krx] {end} 거래 데이터가 없습니다 (휴장일이거나 로그인 실패).")
     print(f"[krx] 기준일 {end}")
 
-    cum = report_cumulative(days)
+    joint = report_joint_buy(days)
     pension = report_pension_sell(days)
-    streak = report_fi_streak(days)
+    fi = report_fi_weekly(days)
 
-    save_csv(end, {"기타법인_5일누적": cum["기타법인"], "사모_5일누적": cum["사모"],
-                   "연기금_순매도": pension, "금융투자_연속순매수": streak})
+    save_csv(end, {"기타법인사모_동시순매수": joint, "연기금_20일순매도": pension, "금융투자_3주연속": fi})
     upload_hf(end)
 
-    msgs = build_messages(days, cum, pension, streak)
+    msgs = build_messages(days, joint, pension, fi)
     if os.getenv("DRY_RUN"):
         print("\n\n".join(msgs))
     else:

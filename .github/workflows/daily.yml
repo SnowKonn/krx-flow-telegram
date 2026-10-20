@@ -27,13 +27,14 @@ jobs:
 
       - name: 수집 + 발송
         env:
+          DATE: ${{ inputs.date }}
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}   # 선택
           HF_TOKEN: ${{ secrets.HF_TOKEN }}                   # 선택
           HF_REPO: ${{ vars.HF_REPO }}                        # 선택 (예: myname/krx-flows)
-        run: python collect.py ${{ inputs.date }}
+        run: python collect.py $DATE
 
       - name: 데이터 커밋
         run: |
