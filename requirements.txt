@@ -1,0 +1,6 @@
+pykrx==1.2.8
+pandas
+requests
+python-dotenv      # 로컬: .env 읽기
+schedule           # 로컬: run_local.py
+huggingface_hub    # 선택: HF Dataset 업로드
