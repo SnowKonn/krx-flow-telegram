@@ -1,6 +1,6 @@
 # KRX 수급 리포트 → 텔레그램 자동 발송
 
-매 영업일 장 마감 후 KRX 투자자별 수급에서 아래 3가지를 뽑아 텔레그램으로 보내고 CSV를 `data/`에 쌓는다.
+매 영업일 KRX 투자자별 수급에서 아래 3가지를 뽑아 텔레그램으로 보내고 CSV를 `data/`에 쌓는다. GitHub Actions는 평일 15:30(KST)에 실행한다.
 
 | # | 리포트 | 기준 |
 |---|---|---|
@@ -72,7 +72,7 @@ crontab -e
 1. 이 폴더를 GitHub repo 로 올린다 (**Use this template** / Fork / 새 repo 에 push).
 2. `Settings → Secrets and variables → Actions → New repository secret` 에 `KRX_ID`, `KRX_PW`, `TELEGRAM_BOT_TOKEN` 등록.
 3. `Actions` 탭 → (Fork 라면 활성화 버튼 클릭) → **KRX 수급 → 텔레그램** → **Run workflow**.
-4. 1~2분 뒤 텔레그램 도착. 이후 평일 18:30(KST)마다 자동 실행되고, CSV 는 repo 의 `data/` 에 커밋된다.
+4. 텔레그램은 이후 평일 15:30(KST)마다 자동 실행되고, CSV 는 repo 의 `data/` 에 커밋된다. 15:30 수치는 잠정 집계로 표시되며, KRX 수급은 18:00까지 바뀔 수 있다.
 
 - 비용: private repo 월 2,000분 무료, 1회 실행 약 1분 → 사실상 0원.
 - GitHub 의 cron 은 수 분~수십 분 늦게 돌 수 있다. 시연은 **Run workflow** 수동 실행으로 한다.
@@ -82,7 +82,8 @@ crontab -e
 
 ## 참고
 
-- 수급 수치는 시간외 거래 종료(18:00) 전까지 계속 바뀐다. 그래서 18:30 에 실행한다.
+- KRX 수급 수치는 시간외 거래 종료(18:00) 전까지 계속 바뀐다. 로컬 스케줄은 18:30 에 실행하고, GitHub Actions의 15:30 결과는 장 종료 시점 잠정 집계로 표시한다.
 - ③ 의 '주'는 달력 주가 아니라 기준일부터 거꾸로 자른 5영업일 블록이다 (주 중간에도 완결된 3주를 비교).
 - 기간·기준값은 `collect.py` 상단 상수(`CUM_DAYS`, `PENSION_DAYS`, `N_WEEKS` 등)로 바꾼다.
 - 기타법인 순매수에는 회사의 자사주 매입 등 법인 계정 매매가 섞인다. 개별 사유는 공시로 확인한다.
+
