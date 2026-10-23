@@ -173,6 +173,10 @@ def main() -> None:
     upload_hf(end)
 
     msgs = build_messages(days, joint, pension, fi)
+    now_kst = dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
+    if end == now_kst.strftime("%Y%m%d") and now_kst.time() < dt.time(18, 0):
+        notice = "⚠️ 장 종료 시점 잠정 집계 · KRX 수급 수치는 18:00까지 변동할 수 있습니다."
+        msgs = [f"{notice}\n\n{msg}" for msg in msgs]
     if os.getenv("DRY_RUN"):
         print("\n\n".join(msgs))
     else:
@@ -181,3 +185,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
