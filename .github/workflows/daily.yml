@@ -2,7 +2,8 @@ name: KRX 수급 → 텔레그램
 
 on:
   schedule:
-    - cron: "30 9 * * 1-5"   # UTC 09:30 = KST 18:30 (시간외 종료 후), 평일
+    - cron: "30 15 * * 1-5"  # 평일 15:30 KST, 장 종료 시점 잠정 집계
+      timezone: "Asia/Seoul"
   workflow_dispatch:          # Actions 탭에서 수동 실행 (시연용)
     inputs:
       date:
@@ -43,3 +44,4 @@ jobs:
           git add data/
           git diff --cached --quiet || git commit -m "data: $(date -u +%F)"
           git push
+
